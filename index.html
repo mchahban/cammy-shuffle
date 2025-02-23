@@ -43,30 +43,42 @@
             text-align: center; 
             margin-top: 20px; 
         }
-        #controls button {
+        #controls button, #playlistSelect {
             background-color: #4CAF50;
             color: white;
             margin: 0 5px;
+            padding: 8px 15px;
         }
         #controls button:disabled {
             background-color: #cccccc;
             cursor: not-allowed;
         }
-        #shuffleButton {
-            background-color: #2196F3 !important;
+        #shuffleButton { background-color: #2196F3 !important; }
+        #loopButton { background-color: #9C27B0 !important; }
+        #prevButton { background-color: #FF9800 !important; }
+        #playlistSelect {
+            margin-bottom: 20px;
+            padding: 8px;
+            border-radius: 5px;
+            border: 1px solid #ddd;
         }
     </style>
 </head>
 <body>
     <h1>Jukebox</h1>
+    <select id="playlistSelect">
+        <option value="loading">Loading playlists...</option>
+    </select>
     <div id="currentSong">No song playing</div>
     <div id="songList"></div>
     <div id="controls">
+        <button id="prevButton" disabled>Previous</button>
         <button id="playButton" disabled>Play</button>
         <button id="pauseButton" disabled>Pause</button>
         <button id="stopButton" disabled>Stop</button>
-        <button id="autoPlayButton" disabled>Auto Play</button>
+        <button id="loopButton">Loop: Off</button>
         <button id="shuffleButton">Shuffle</button>
+        <button id="nextButton" disabled>Next</button>
     </div>
 
     <script>
@@ -75,38 +87,75 @@
         const playButton = document.getElementById('playButton');
         const pauseButton = document.getElementById('pauseButton');
         const stopButton = document.getElementById('stopButton');
-        const autoPlayButton = document.getElementById('autoPlayButton');
+        const loopButton = document.getElementById('loopButton');
         const shuffleButton = document.getElementById('shuffleButton');
+        const nextButton = document.getElementById('nextButton');
+        const prevButton = document.getElementById('prevButton');
+        const playlistSelect = document.getElementById('playlistSelect');
 
-        let songs = [];
+        let allSongs = [];
         let currentAudio = null;
         let currentSongIndex = 0;
         let isShuffleMode = false;
+        let loopMode = 'off'; // 'off', 'one', 'all'
         let shuffledIndices = [];
+        let currentPlaylist = [];
         const repoUrl = 'https://api.github.com/repos/1026Cammy/Cammy/contents/';
 
-        // Fetch MP3 files from GitHub repository
-        fetch(repoUrl)
-            .then(response => response.json())
-            .then(files => {
-                const mp3Files = files.filter(file => 
-                    file.name.toLowerCase().endsWith('.mp3') && file.type === 'file'
-                );
+        async function fetchPlaylists() {
+            try {
+                const response = await fetch(repoUrl);
+                const contents = await response.json();
+                const folders = contents.filter(item => item.type === 'dir');
                 
-                songs = mp3Files.map(file => ({
-                    title: file.name.replace('.mp3', '').replace(/_/g, ' '),
-                    url: file.download_url
-                }));
+                // Add "All" option first
+                playlistSelect.innerHTML = '<option value="all">All Songs</option>';
+                
+                // Fetch songs for each folder
+                const playlistPromises = folders.map(async folder => {
+                    const folderResponse = await fetch(folder.url);
+                    const folderContents = await folderResponse.json();
+                    const songs = folderContents
+                        .filter(file => file.name.toLowerCase().endsWith('.mp3'))
+                        .map(file => ({
+                            title: file.name.replace('.mp3', '').replace(/_/g, ' '),
+                            url: file.download_url,
+                            folder: folder.name
+                        }));
+                    return { name: folder.name, songs };
+                });
 
+                const playlists = await Promise.all(playlistPromises);
+                allSongs = playlists.flatMap(p => p.songs);
+                
+                // Populate playlist select
+                playlists.forEach(playlist => {
+                    const option = document.createElement('option');
+                    option.value = playlist.name;
+                    option.textContent = playlist.name;
+                    playlistSelect.appendChild(option);
+                });
+
+                // Set initial playlist to "All"
+                currentPlaylist = allSongs;
                 renderSongList();
-            })
-            .catch(error => {
-                console.error('Error fetching songs:', error);
-                songList.innerHTML = '<p>Error loading songs. Please try again later.</p>';
-            });
+            } catch (error) {
+                console.error('Error fetching playlists:', error);
+                playlistSelect.innerHTML = '<option>Error loading playlists</option>';
+            }
+        }
+
+        playlistSelect.onchange = () => {
+            const selected = playlistSelect.value;
+            currentPlaylist = selected === 'all' 
+                ? allSongs 
+                : allSongs.filter(song => song.folder === selected);
+            currentSongIndex = 0;
+            renderSongList();
+        };
 
         function createShuffledIndices() {
-            shuffledIndices = Array.from({length: songs.length}, (_, i) => i);
+            shuffledIndices = Array.from({length: currentPlaylist.length}, (_, i) => i);
             for (let i = shuffledIndices.length - 1; i > 0; i--) {
                 const j = Math.floor(Math.random() * (i + 1));
                 [shuffledIndices[i], shuffledIndices[j]] = [shuffledIndices[j], shuffledIndices[i]];
@@ -116,14 +165,18 @@
         shuffleButton.onclick = () => {
             isShuffleMode = !isShuffleMode;
             shuffleButton.style.backgroundColor = isShuffleMode ? '#ff4081' : '#2196F3';
-            if (isShuffleMode) {
-                createShuffledIndices();
-            }
+            if (isShuffleMode) createShuffledIndices();
+        };
+
+        loopButton.onclick = () => {
+            const modes = ['off', 'one', 'all'];
+            loopMode = modes[(modes.indexOf(loopMode) + 1) % 3];
+            loopButton.textContent = `Loop: ${loopMode.charAt(0).toUpperCase() + loopMode.slice(1)}`;
         };
 
         function renderSongList() {
             songList.innerHTML = '';
-            songs.forEach((song, index) => {
+            currentPlaylist.forEach((song, index) => {
                 const button = document.createElement('button');
                 button.innerText = `Song ${index + 1} - ${song.title}`;
                 button.onclick = () => {
@@ -135,67 +188,75 @@
         }
 
         function selectSong(index) {
-            if (currentAudio) {
-                currentAudio.pause();
-            }
-
+            if (currentAudio) currentAudio.pause();
+            
             currentSongIndex = index;
-            const selectedSong = songs[index];
+            const selectedSong = currentPlaylist[index];
             currentAudio = new Audio(selectedSong.url);
-            currentAudio.onended = () => playNextSong();
+            currentAudio.onended = handleSongEnd;
             currentSongDisplay.innerText = `Playing: Song ${index + 1} - ${selectedSong.title}`;
+            
+            // Enable controls
+            [playButton, pauseButton, stopButton, nextButton, prevButton].forEach(
+                btn => btn.disabled = false
+            );
+        }
 
-            playButton.disabled = false;
-            pauseButton.disabled = false;
-            stopButton.disabled = false;
-            autoPlayButton.disabled = false;
+        function handleSongEnd() {
+            if (loopMode === 'one') {
+                currentAudio.play();
+            } else {
+                if (loopMode === 'all' && currentSongIndex === currentPlaylist.length - 1) {
+                    currentSongIndex = -1;
+                }
+                playNextSong();
+            }
         }
 
         function playNextSong() {
             if (isShuffleMode) {
                 const currentShuffleIndex = shuffledIndices.indexOf(currentSongIndex);
-                const nextShuffleIndex = (currentShuffleIndex + 1) % songs.length;
-                selectSong(shuffledIndices[nextShuffleIndex]);
+                const nextIndex = (currentShuffleIndex + 1) % currentPlaylist.length;
+                currentSongIndex = shuffledIndices[nextIndex];
             } else {
-                currentSongIndex = (currentSongIndex + 1) % songs.length;
-                selectSong(currentSongIndex);
+                currentSongIndex = (currentSongIndex + 1) % currentPlaylist.length;
             }
-            if (currentAudio) {
-                currentAudio.play();
-            }
+            selectSong(currentSongIndex);
+            currentAudio.play();
         }
 
-        playButton.onclick = () => {
-            if (currentAudio) {
-                currentAudio.play();
+        function playPrevSong() {
+            if (isShuffleMode) {
+                const currentShuffleIndex = shuffledIndices.indexOf(currentSongIndex);
+                const prevIndex = (currentShuffleIndex - 1 + currentPlaylist.length) % currentPlaylist.length;
+                currentSongIndex = shuffledIndices[prevIndex];
+            } else {
+                currentSongIndex = (currentSongIndex - 1 + currentPlaylist.length) % currentPlaylist.length;
             }
-        };
+            selectSong(currentSongIndex);
+            currentAudio.play();
+        }
 
-        pauseButton.onclick = () => {
-            if (currentAudio) {
-                currentAudio.pause();
-            }
-        };
-
+        // Control event listeners
+        playButton.onclick = () => currentAudio.play();
+        pauseButton.onclick = () => currentAudio.pause();
         stopButton.onclick = () => {
-            if (currentAudio) {
-                currentAudio.pause();
-                currentAudio.currentTime = 0;
-                resetControls();
-            }
+            currentAudio.pause();
+            currentAudio.currentTime = 0;
+            resetControls();
         };
-
-        autoPlayButton.onclick = () => {
-            playNextSong();
-        };
+        nextButton.onclick = playNextSong;
+        prevButton.onclick = playPrevSong;
 
         function resetControls() {
             currentSongDisplay.innerText = "No song playing";
-            playButton.disabled = true;
-            pauseButton.disabled = true;
-            stopButton.disabled = true;
-            autoPlayButton.disabled = true;
+            [playButton, pauseButton, stopButton, nextButton, prevButton].forEach(
+                btn => btn.disabled = true
+            );
         }
+
+        // Initial setup
+        fetchPlaylists();
     </script>
 </body>
 </html>
