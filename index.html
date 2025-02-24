@@ -86,8 +86,116 @@
     </div>
 
     <script>
-        // ... [keep all JavaScript code from previous version unchanged] ...
-        // Only modify the loopButton onclick handler:
+        const GITHUB_API_KEY = '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'; // Replace with your token
+        const REPO_OWNER = 'mchahban';
+        const REPO_NAME = 'cammy-playslit-test';
+        
+        const githubHeaders = {
+            'Authorization': `token ${GITHUB_API_KEY}`,
+            'Accept': 'application/vnd.github.v3.raw'
+        };
+
+        const songList = document.getElementById('songList');
+        const currentSongDisplay = document.getElementById('currentSong');
+        const playPauseButton = document.getElementById('playPauseButton');
+        const stopButton = document.getElementById('stopButton');
+        const loopButton = document.getElementById('loopButton');
+        const shuffleButton = document.getElementById('shuffleButton');
+        const nextButton = document.getElementById('nextButton');
+        const prevButton = document.getElementById('prevButton');
+        const playlistSelect = document.getElementById('playlistSelect');
+
+        let allSongs = [];
+        let currentAudio = null;
+        let currentSongIndex = 0;
+        let isShuffleMode = false;
+        let loopMode = 'off';
+        let shuffledIndices = [];
+        let currentPlaylist = [];
+        const repoUrl = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/contents/`;
+
+        async function fetchPlaylists() {
+            try {
+                const response = await fetch(repoUrl, { headers: githubHeaders });
+                if (!response.ok) {
+                    throw new Error('Failed to access repository');
+                }
+                const contents = await response.json();
+                const folders = contents.filter(item => item.type === 'dir');
+                
+                playlistSelect.innerHTML = '<option value="all">All Songs</option>';
+                
+                const playlistPromises = folders.map(async folder => {
+                    try {
+                        const folderResponse = await fetch(folder.url, { headers: githubHeaders });
+                        const folderContents = await folderResponse.json();
+                        const songs = folderContents
+                            .filter(file => file.name.toLowerCase().endsWith('.mp3'))
+                            .map(file => ({
+                                title: file.name.replace('.mp3', '').replace(/_/g, ' '),
+                                url: `${file.download_url}?token=${GITHUB_API_KEY}`,
+                                folder: folder.name
+                            }));
+                        return { name: folder.name, songs };
+                    } catch (error) {
+                        console.error(`Error fetching folder ${folder.name}:`, error);
+                        return { name: folder.name, songs: [] };
+                    }
+                });
+
+                const playlists = (await Promise.all(playlistPromises)).filter(p => p.songs.length > 0);
+                allSongs = playlists.flatMap(p => p.songs);
+                
+                playlists.forEach(playlist => {
+                    const option = document.createElement('option');
+                    option.value = playlist.name;
+                    option.textContent = playlist.name;
+                    playlistSelect.appendChild(option);
+                });
+
+                currentPlaylist = allSongs;
+                renderSongList();
+            } catch (error) {
+                console.error('Error fetching playlists:', error);
+                playlistSelect.innerHTML = '<option>Error loading playlists</option>';
+                alert('Error accessing repository: ' + error.message);
+            }
+        }
+
+        playlistSelect.onchange = () => {
+            const selected = playlistSelect.value;
+            currentPlaylist = selected === 'all' 
+                ? allSongs 
+                : allSongs.filter(song => song.folder === selected);
+            currentSongIndex = 0;
+            if(isShuffleMode) createShuffledIndices();
+            renderSongList();
+            if(currentAudio) {
+                currentAudio.pause();
+                selectSong(0);
+            }
+        };
+
+        function createShuffledIndices() {
+            shuffledIndices = Array.from({length: currentPlaylist.length}, (_, i) => i);
+            for (let i = shuffledIndices.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [shuffledIndices[i], shuffledIndices[j]] = [shuffledIndices[j], shuffledIndices[i]];
+            }
+        }
+
+        function updateShuffleButton() {
+            const isGrey = !isShuffleMode || loopMode === 'song';
+            shuffleButton.classList.toggle('grey-shuffle', isGrey);
+        }
+
+        shuffleButton.onclick = () => {
+            if(loopMode === 'song') return;
+            isShuffleMode = !isShuffleMode;
+            if(isShuffleMode) createShuffledIndices();
+            updateShuffleButton();
+        };
+
         loopButton.onclick = () => {
             const modes = ['off', 'song', 'playlist', 'all'];
             loopMode = modes[(modes.indexOf(loopMode) + 1) % 4];
@@ -95,7 +203,121 @@
             if(loopMode === 'song') isShuffleMode = false;
             updateShuffleButton();
         };
-        // ... [rest of the JavaScript remains identical] ...
+
+        function renderSongList() {
+            songList.innerHTML = '';
+            currentPlaylist.forEach((song, index) => {
+                const button = document.createElement('button');
+                button.innerText = `Song ${index + 1} - ${song.title}`;
+                button.onclick = () => {
+                    selectSong(index);
+                    currentAudio.play();
+                    playPauseButton.innerHTML = '<i class="fas fa-pause control-icon"></i>';
+                };
+                songList.appendChild(button);
+            });
+        }
+
+        function selectSong(index) {
+            if(currentAudio) currentAudio.pause();
+            
+            currentSongIndex = index;
+            const selectedSong = currentPlaylist[index];
+            currentAudio = new Audio(selectedSong.url);
+            currentAudio.onended = handleSongEnd;
+            currentSongDisplay.innerText = `Playing: Song ${index + 1} - ${selectedSong.title}`;
+            
+            [playPauseButton, stopButton, nextButton, prevButton].forEach(
+                btn => btn.disabled = false
+            );
+            playPauseButton.innerHTML = '<i class="fas fa-pause control-icon"></i>';
+        }
+
+        function handleSongEnd() {
+            switch(loopMode) {
+                case 'song':
+                    currentAudio.play();
+                    break;
+                case 'playlist':
+                    playNextSong();
+                    break;
+                case 'all':
+                    if(currentSongIndex === currentPlaylist.length - 1) {
+                        switchToNextPlaylist();
+                    } else {
+                        playNextSong();
+                    }
+                    break;
+                default:
+                    if(currentSongIndex === currentPlaylist.length - 1) {
+                        switchToNextPlaylist();
+                    } else {
+                        playNextSong();
+                    }
+            }
+        }
+
+        function switchToNextPlaylist() {
+            const options = Array.from(playlistSelect.options);
+            const currentIndex = options.findIndex(opt => opt.value === playlistSelect.value);
+            const nextIndex = (currentIndex + 1) % options.length;
+            
+            playlistSelect.value = options[nextIndex].value;
+            playlistSelect.dispatchEvent(new Event('change'));
+            
+            if(currentPlaylist.length > 0) {
+                selectSong(0);
+                currentAudio.play();
+            }
+        }
+
+        function playNextSong() {
+            if(isShuffleMode) {
+                const currentShuffleIndex = shuffledIndices.indexOf(currentSongIndex);
+                const nextIndex = (currentShuffleIndex + 1) % currentPlaylist.length;
+                currentSongIndex = shuffledIndices[nextIndex];
+            } else {
+                currentSongIndex = (currentSongIndex + 1) % currentPlaylist.length;
+            }
+            selectSong(currentSongIndex);
+            currentAudio.play();
+        }
+
+        function playPrevSong() {
+            if(isShuffleMode) {
+                const currentShuffleIndex = shuffledIndices.indexOf(currentSongIndex);
+                const prevIndex = (currentShuffleIndex - 1 + currentPlaylist.length) % currentPlaylist.length;
+                currentSongIndex = shuffledIndices[prevIndex];
+            } else {
+                currentSongIndex = (currentSongIndex - 1 + currentPlaylist.length) % currentPlaylist.length;
+            }
+            selectSong(currentSongIndex);
+            currentAudio.play();
+        }
+
+        playPauseButton.onclick = () => {
+            if(currentAudio.paused) {
+                currentAudio.play();
+                playPauseButton.innerHTML = '<i class="fas fa-pause control-icon"></i>';
+            } else {
+                currentAudio.pause();
+                playPauseButton.innerHTML = '<i class="fas fa-play control-icon"></i>';
+            }
+        };
+
+        stopButton.onclick = () => {
+            if(currentAudio) {
+                currentAudio.pause();
+                currentAudio.currentTime = 0;
+                playPauseButton.innerHTML = '<i class="fas fa-play control-icon"></i>';
+            }
+        };
+
+        nextButton.onclick = playNextSong;
+        prevButton.onclick = playPrevSong;
+
+        // Initialize the player
+        fetchPlaylists();
     </script>
 </body>
 </html>
